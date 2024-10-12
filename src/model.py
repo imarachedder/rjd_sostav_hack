@@ -1,14 +1,16 @@
 import os.path
-
+import time
 import torch
 import torchaudio
-import librosa
-import scipy.signal
-import numpy as np
 import torch.nn as nn
+import noisereduce as nr
+import json
+import psutil
+import jiwer
+from sklearn.metrics import f1_score
 
 # Глобальная проблема.
-# Точность данных сильно храмает, в основном возвращает 4 лейбл на большитсво аудио - не есть хорошо
+# Точность данных сильно храмает, в основном возвращает 4 лейбл на большинство аудио - не есть хорошо
 # Обучение было выполнено с нуля
 
 COMMANDS = {
@@ -72,6 +74,7 @@ NUMERIC_WORDS = {
     "восемьдесят": 80, "девяносто": 90, "сто": 100, "двести": 200, "триста": 300
 }
 
+
 class SpeechRecognitionModel(nn.Module):
     """
     Моделька
@@ -87,77 +90,75 @@ class SpeechRecognitionModel(nn.Module):
         output = self.fc(last_hidden_state)
         return output
 
+
 def extract_numeric_attribute(text):
+    """
+    функция должны была переводить числовое значение
+    из транскрибации где есть значения семь восеь и тд в int для передачи в attribute
+    пока что это проблема, не смог реализовать.
+    Моделька возвращает класс команды, а не наоборот. в общем подумаем
+    Args:
+        text:
+
+    Returns:
+
+    """
     words = text.lower().split()
     for word in words:
         if word in NUMERIC_WORDS:
             return NUMERIC_WORDS[word]
     return -1
 
-def noise_reduction(waveform, sample_rate):
-    """
-    подавляем шум на аудио
 
-    Проблема: Пока что не разобрался как правильно обработать аудио для избавления от шума.
+def denoise_audio(input_audio_path, output_audio_path):
+    """
+    Очищаем от шума и сохраняем пока что для проверки в папку outupts
     Args:
-        waveform:
-        sample_rate:
-    Returns:
-
-    """
-    freqs, times, Sxx = scipy.signal.spectrogram(waveform.numpy(), fs=sample_rate)
-
-    threshold = np.mean(Sxx) * 1.5
-    Sxx[Sxx < threshold] = 0
-
-    _, cleaned_waveform = scipy.signal.istft(Sxx)
-
-    return torch.tensor(cleaned_waveform, dtype=torch.float32)
-
-
-def trim_silence(waveform, sample_rate):
-    """
-    урезка тишины
-    Args:
-        waveform:
-        sample_rate:
+        input_audio_path:
+        output_audio_path:
 
     Returns:
 
     """
-    trimmed_waveform, _ = librosa.effects.trim(waveform.numpy(), top_db=20)
-    return torch.tensor(trimmed_waveform, dtype=torch.float32)
+    waveform, sample_rate = torchaudio.load(input_audio_path)
 
-# def preprocess_audio(audio_filepath, n_mels=128, output_filepath = r"C:\Users\admin\Desktop\rjd_sostav\outputs\output.mp3"):
-#     waveform, sample_rate = torchaudio.load(audio_filepath)
-#     cleaned_waveform = noise_reduction(waveform[0], sample_rate)
-#     trimmed_waveform = trim_silence(cleaned_waveform, sample_rate)
-#     if output_filepath:
-#         torchaudio.save(output_filepath, trimmed_waveform.unsqueeze(0), sample_rate)
-#     mel_spectrogram = librosa.feature.melspectrogram(y=trimmed_waveform.numpy(), sr=sample_rate, n_mels=n_mels)
-#     log_mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
-#     tensor_audio = torch.tensor(log_mel_spectrogram, dtype=torch.float32)
-#
-#     return tensor_audio.T  # Транспонируем
+    # переводим в моно
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
 
-def preprocess_audio(audio_filepath, n_mels=128):
+    # преобразуем тензор в массив NumPy
+    audio_data = waveform.numpy().flatten()
+
+    # удаляем шум
+    denoised_audio = nr.reduce_noise(y=audio_data, sr=sample_rate)
+    denoised_waveform = torch.tensor(denoised_audio, dtype=torch.float32)
+
+    torchaudio.save(output_audio_path, torch.tensor(denoised_audio).unsqueeze(0), sample_rate)
+    return denoised_waveform, sample_rate
+
+
+def preprocess_audio(audio_filepath, n_mels=128, n_fft=512):
     """
-    Предварительная обработка аудио
+    Функция предвариательной обработки аудио
     Args:
         audio_filepath:
         n_mels:
-        output_filepath:
 
     Returns:
 
     """
-    waveform, sample_rate = torchaudio.load(audio_filepath)
+    out_path = os.path.join(current_dir, '..', 'outputs', audio_filepath.split("\\")[-1])
+    denoised_waveform, sample_rate = denoise_audio(audio_filepath,
+                                      output_audio_path=out_path)
 
-    mel_spectrogram = librosa.feature.melspectrogram(y=waveform[0].numpy(), sr=sample_rate, n_mels=n_mels)
+    mel_spectrogram_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=sample_rate,
+        n_mels=n_mels,
+        n_fft=n_fft
+    )
+    mel_spectrogram = mel_spectrogram_transform(denoised_waveform.unsqueeze(0))  # Добавляем размер канала
 
-    log_mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
-    tensor_audio = torch.tensor(log_mel_spectrogram, dtype=torch.float32)
-    return tensor_audio.T  # Транспонируем для правильной подачи в модель
+    return mel_spectrogram.squeeze(0).transpose(0, 1)
 
 
 def predict_command(model, audio_filepath):
@@ -172,20 +173,19 @@ def predict_command(model, audio_filepath):
     """
     # мел-спектрограмма
     audio_tensor = preprocess_audio(audio_filepath)
-    print(audio_tensor)
+    # print(audio_tensor)
 
-    print(f"размер перед разжатием: {audio_tensor.shape}")
+    # print(f"размер перед разжатием: {audio_tensor.shape}")
 
-    audio_tensor = audio_tensor.unsqueeze(0)  # размер батча
+    audio_tensor = audio_tensor.unsqueeze(0)
 
-    print(f"размер ввода после разжатия: {audio_tensor.shape}")
+    # print(f"размер ввода после разжатия: {audio_tensor.shape}")
 
     model.eval()
     with torch.no_grad():
         output = model(audio_tensor)
 
     predicted_label = torch.argmax(output, dim=1).item()
-    print("Предиктивная метка", predicted_label)
     global _id2label
     predicted_text = _id2label[predicted_label]
 
@@ -194,10 +194,10 @@ def predict_command(model, audio_filepath):
 
 def process_audio_command(audio_filepath, model):
     predicted_label, predicted_text = predict_command(model, audio_filepath)
-    print(predicted_label, predicted_text)
+    # print(predicted_label, predicted_text)
     attribute_value = extract_numeric_attribute(predicted_text)
     result = {
-        "audio_filepath": audio_filepath,
+        "audio_filepath": audio_filepath.split("\\")[-1],
         "text": predicted_text,
         "label": predicted_label,
         "attribute": attribute_value
@@ -220,18 +220,39 @@ def load_model(filepath, input_size=128, hidden_size=64, output_size=21):
     model = SpeechRecognitionModel(input_size, hidden_size, output_size)
     model.load_state_dict(torch.load(filepath, weights_only=True))
     model.eval()
-    print(f"модельку загрузил{filepath}")
+    # print(f"модельку загрузил{filepath}")
     return model
 
 
-print("Начал процесс предикта")
+if __name__ == "__main__":
+    start = time.time()
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(current_dir, 'speech_recognition_model.pth')
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(current_dir, 'speech_recognition_model2.pth')
 
-loaded_model = load_model(model_path)
+    loaded_model = load_model(model_path)
 
-audio_file_path = os.path.join(current_dir, '..', 'luga', '02_11_2023', '2023_11_02__10_33_44.wav')
+    audio_file_path = os.path.join(current_dir, '..', 'luga', '02_11_2023', '2023_11_02__10_45_36.wav')
+    output = os.path.join(current_dir, '..', 'commands')
+    result = process_audio_command(audio_file_path, loaded_model)
+    with open(os.path.join(output, "commands.json"), 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=4)
 
-result = process_audio_command(audio_file_path, loaded_model)
-print(result)
+    print(f"Время выполнения: {(time.time() - start) * 1000} мс" )
+
+    # пАмять
+    process = psutil.Process(os.getpid())
+    memory_usage = process.memory_info().rss
+    print(f"Используемая память: {memory_usage / (1024 ** 2):.2f} MB")
+    # WER
+    ground_truth = "осадить на пять вагонов"
+    hypothesis = result["text"]
+    wer = jiwer.wer(ground_truth, hypothesis)
+    print(f"Word Error Rate (WER): {wer:.2f}")
+
+    # F1 Score
+    y_true = [4]
+    y_pred = [result["label"]]
+
+    f1 = f1_score(y_true, y_pred, average='macro')
+    print(f"F1 Score: {f1:.2f}")
