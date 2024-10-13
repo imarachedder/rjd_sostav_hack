@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
     for item in data:
         directory = item['audio_filepath'].split("/")
-        print(directory)
+        # print(directory)
         audio_file_path = os.path.join(current_dir, '..', 'luga', directory[0], directory[1])
         ground_truth.append(item['text'])
         y_true.append(item['label'])
