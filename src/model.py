@@ -231,12 +231,26 @@ if __name__ == "__main__":
     model_path = os.path.join(current_dir, 'speech_recognition_model2.pth')
 
     loaded_model = load_model(model_path)
+    y_true = []
+    y_pred = []
+    hypothesis = []
+    ground_truth = []
+    with open('luga.json', 'r', encoding='utf-8') as file:
+        data = json.load(file)
 
-    audio_file_path = os.path.join(current_dir, '..', 'luga', '02_11_2023', '2023_11_02__10_45_36.wav')
-    output = os.path.join(current_dir, '..', 'commands')
-    result = process_audio_command(audio_file_path, loaded_model)
-    with open(os.path.join(output, "commands.json"), 'w', encoding='utf-8') as f:
-        json.dump(result, f, ensure_ascii=False, indent=4)
+    for item in data:
+        directory = item['audio_filepath'].split("/")
+        print(directory)
+        audio_file_path = os.path.join(current_dir, '..', 'luga', directory[0], directory[1])
+        ground_truth.append(item['text'])
+        y_true.append(item['label'])
+        output = os.path.join(current_dir, '..', 'commands')
+        result = process_audio_command(audio_file_path, loaded_model)
+        with open(os.path.join(output, "commands.json"), 'a', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=4)
+        y_pred.append(result['label'])
+        hypothesis.append(result['text'])
+
 
     print(f"Время выполнения: {(time.time() - start) * 1000} мс" )
 
@@ -245,14 +259,14 @@ if __name__ == "__main__":
     memory_usage = process.memory_info().rss
     print(f"Используемая память: {memory_usage / (1024 ** 2):.2f} MB")
     # WER
-    ground_truth = "осадить на пять вагонов"
-    hypothesis = result["text"]
+
     wer = jiwer.wer(ground_truth, hypothesis)
     print(f"Word Error Rate (WER): {wer:.2f}")
 
     # F1 Score
-    y_true = [4]
-    y_pred = [result["label"]]
+    # y_true = [6, 7, 9, 4]
+    # y_pred = [result["label"]]
 
     f1 = f1_score(y_true, y_pred, average='macro')
     print(f"F1 Score: {f1:.2f}")
+
